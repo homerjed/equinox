@@ -2,17 +2,17 @@ import functools as ft
 import timeit
 from typing import Optional
 
+import equinox as eqx
+import equinox.internal as eqxi
 import jax
 import jax.lax as lax
+import jax.lib
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 import pytest
 
-import equinox as eqx
-import equinox.internal as eqxi
-
-from .helpers import shaped_allclose
+from .helpers import tree_allclose
 
 
 def _get_problem(key, *, num_steps: Optional[int]):
@@ -36,8 +36,8 @@ def _get_problem(key, *, num_steps: Optional[int]):
             step, val1, val2 = carry
             (theta,) = mlp(val1)
             real, imag = val1
-            z = real + imag * 1j
-            z = z * jnp.exp(1j * theta)
+            z = real.astype(jnp.complex64) + imag.astype(jnp.complex64) * 1j
+            z = z * jnp.exp(1j * theta.astype(jnp.complex64))
             real = jnp.real(z)
             imag = jnp.imag(z)
             jax.debug.print("{}", step)  # pyright: ignore
@@ -88,7 +88,7 @@ def test_notangent_forward(buffer, kind, getkey):
         buffers=buffer_fn,
         checkpoints=1,
     )
-    assert shaped_allclose(final_carry, true_final_carry, rtol=1e-5, atol=1e-5)
+    assert tree_allclose(final_carry, true_final_carry, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("buffer", (False, True))
@@ -117,7 +117,7 @@ def test_forward(buffer, kind, getkey):
         )
 
     final_carry, _ = jax.linearize(run, init_val1, init_val2)
-    assert shaped_allclose(final_carry, true_final_carry, atol=1e-4, rtol=1e-4)
+    assert tree_allclose(final_carry, true_final_carry, atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.parametrize(
@@ -201,8 +201,8 @@ def test_backward_checkpointed(
     )
     if buffer:
         grad[1] = grad[1].at[:num_steps].set(0)
-    assert shaped_allclose(value, true_value, rtol=1e-4, atol=1e-4)
-    assert shaped_allclose(grad, true_grad, rtol=1e-4, atol=1e-4)
+    assert tree_allclose(value, true_value, rtol=1e-4, atol=1e-4)
+    assert tree_allclose(grad, true_grad, rtol=1e-4, atol=1e-4)
     assert true_text in text.strip()
 
 
@@ -245,8 +245,8 @@ def test_backward_bounded(buffer, getkey):
     value, grad = run([init_val1, init_val2, mlp])
     if buffer:
         grad[1] = grad[1].at[:14].set(0)
-    assert shaped_allclose(value, true_value, rtol=1e-4, atol=1e-4)
-    assert shaped_allclose(grad, true_grad, rtol=1e-4, atol=1e-4)
+    assert tree_allclose(value, true_value, rtol=1e-4, atol=1e-4)
+    assert tree_allclose(grad, true_grad, rtol=1e-4, atol=1e-4)
 
 
 def _maybe_value_and_grad(kind):
@@ -311,8 +311,8 @@ def test_vmap_primal_unbatched_cond(buffer, kind, getkey):
     value, grad = run([init_val1, init_val2, mlp])
     if buffer and kind != "lax":
         grad[1] = grad[1].at[:, :14].set(0)
-    assert shaped_allclose(value, true_value, atol=1e-4)
-    assert shaped_allclose(grad, true_grad, atol=1e-4)
+    assert tree_allclose(value, true_value, atol=1e-4)
+    assert tree_allclose(grad, true_grad, atol=1e-4)
 
 
 @pytest.mark.parametrize("buffer", (False, True))
@@ -365,8 +365,8 @@ def test_vmap_primal_batched_cond(buffer, kind, getkey):
     if buffer and kind != "lax":
         for i, j in enumerate(init_step):
             grad[1] = grad[1].at[i, j.item() : 14].set(0)
-    assert shaped_allclose(value, true_value, rtol=1e-4, atol=1e-4)
-    assert shaped_allclose(grad, true_grad, rtol=1e-4, atol=1e-4)
+    assert tree_allclose(value, true_value, rtol=1e-4, atol=1e-4)
+    assert tree_allclose(grad, true_grad, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize("buffer", (False, True))
@@ -408,7 +408,7 @@ def test_vmap_cotangent(buffer, kind, getkey):
 
     true_jac = true_run((init_val1, mlp), init_val2)
     jac = run((init_val1, mlp), init_val2)
-    assert shaped_allclose(jac, true_jac, rtol=1e-4, atol=1e-4)
+    assert tree_allclose(jac, true_jac, rtol=1e-4, atol=1e-4)
 
 
 # This test might be superfluous?
@@ -514,6 +514,10 @@ def test_speed_buffer_while(read):
     assert speed < 1
 
 
+@pytest.mark.skipif(
+    jax.lib.__version__ == "0.4.16",  # pyright: ignore
+    reason="jaxlib bug; see https://github.com/google/jax/pull/17724",
+)
 # This isn't testing any particular failure mode: just that things generally work.
 def test_speed_grad_checkpointed_while(getkey):
     mlp = eqx.nn.MLP(2, 1, 2, 2, key=getkey())
@@ -531,8 +535,8 @@ def test_speed_grad_checkpointed_while(getkey):
             step, val = carry
             (theta,) = mlp(val)
             real, imag = val
-            z = real + imag * 1j
-            z = z * jnp.exp(1j * theta)
+            z = real.astype(jnp.complex64) + imag.astype(jnp.complex64) * 1j
+            z = z * jnp.exp(1j * theta.astype(jnp.complex64))
             real = jnp.real(z)
             imag = jnp.imag(z)
             return step + 1, jnp.stack([real, imag])
@@ -657,8 +661,8 @@ def test_nested_loops(read, getkey):
         step, (val1, val2, val3, val4), ts, final_step, cotangents, True
     )
 
-    assert shaped_allclose(value, true_value)
-    assert shaped_allclose(grads, true_grads, rtol=1e-4, atol=1e-5)
+    assert tree_allclose(value, true_value)
+    assert tree_allclose(grads, true_grads, rtol=1e-4, atol=1e-5)
 
 
 def test_zero_buffer():
@@ -707,6 +711,17 @@ def test_symbolic_zero(capfd):
     ) in text
 
 
+def test_disable_jit():
+    def cond_fun(carry):
+        return True
+
+    def body_fun(carry):
+        return 5
+
+    with jax.disable_jit():
+        eqxi.while_loop(cond_fun, body_fun, 3, max_steps=3, kind="checkpointed")
+
+
 def test_buffer_index():
     def cond_fun(carry):
         return True
@@ -721,3 +736,156 @@ def test_buffer_index():
     eqxi.while_loop(
         cond_fun, body_fun, init, kind="checkpointed", buffers=buffers, max_steps=2
     )
+
+
+# This test includes complexities like buffers, exact ararys, and `None`, just to be
+# sure we handle these complexities here too.
+def test_nondifferentiable_body1():
+    def cond_fun(carry):
+        return True
+
+    def body_fun(carry):
+        step, x, y, z, _ = carry
+        y2 = eqxi.nondifferentiable(y)
+        return step + 1, x + y2, y + 1, z.at[step].set(y), None
+
+    @eqx.filter_jit
+    @jax.value_and_grad
+    def run(x__z, y_in, true):
+        x_in, z_in = x__z
+        init = (0, x_in, y_in, z_in, None)
+        if true:
+            out = _while_as_scan(cond_fun, body_fun, init, max_steps=3)
+        else:
+            out = eqxi.while_loop(
+                cond_fun, body_fun, init, max_steps=3, kind="checkpointed"
+            )
+        _, x_out, y_out, z_out, none = out
+        assert none is None
+        return x_out + y_out + jnp.sum(z_out)
+
+    x_in = jnp.array(1.2)
+    y_in = jnp.array(0.7)
+    z_in = jnp.array([-5.0, -5.0, -5.0])
+    true = run((x_in, z_in), y_in, true=True)
+    outs = run((x_in, z_in), y_in, true=False)
+    assert tree_allclose(true, outs)
+
+
+def test_nondifferentiable_body2(capfd):
+    def cond_fun(carry):
+        return True
+
+    # This function is set up so that (x, y, z) require multiple passes through to
+    # propagate which values are perturbed.
+    # This function is set up so that w has a cotangent that should be dropped.
+    def body_fun(carry):
+        x, y, z, w = carry
+        w = eqxi.nondifferentiable(w)
+        return x + 1, x + y, y + z, w * 2
+
+    @jax.jit
+    @jax.grad
+    def run(x, y, z, w):
+        x, y, z, w = eqxi.while_loop(
+            cond_fun, body_fun, (x, y, z, w), max_steps=3, kind="checkpointed"
+        )
+        return y + w
+
+    capfd.readouterr()
+    run(1.0, 1.0, 1.0, 1.0)
+    text, _ = capfd.readouterr()
+    assert "perturb_val (False, False, False, (True, True, True, False))" in text
+    assert (
+        "symbolic_zero_gradient (True, True, True, (False, False, True, True))" in text
+    )
+
+
+def test_body_fun_grads(capfd):
+    def cond_fun(carry):
+        return True
+
+    @eqx.filter_jit
+    @jax.grad
+    def run(x__y, true):
+        x, y = x__y
+        # `init` and `body_fun` are deliberately chosen so that `carry[0]` requires a
+        # gradient solely for the purpose of propagating that gradient back into `x`.
+        # (And in particular, not for propagating it back into `init`.)
+        # Thus this test is checking that we get gradients with respect to `body_fun`
+        # correctly.
+        init = (1.0, y)
+
+        def body_fun(carry):
+            a, b = carry
+            return a * x, b + 1
+
+        if true:
+            final = _while_as_scan(cond_fun, body_fun, init, max_steps=3)
+        else:
+            final = eqxi.while_loop(
+                cond_fun, body_fun, init, max_steps=3, kind="checkpointed"
+            )
+        return sum(final)
+
+    x__y = (jnp.array(1.0), jnp.array(1.0))
+
+    capfd.readouterr()
+    outs = run(x__y, true=False)
+    text, _ = capfd.readouterr()
+    assert "perturb_val (False, False, False, (True, True))" in text
+    assert "symbolic_zero_gradient (True, True, True, (False, False))" in text
+
+    true = run(x__y, true=True)
+    assert tree_allclose(true, outs)
+
+
+def test_trivial_vjp(capfd):
+    def cond_fun(carry):
+        return True
+
+    def body_fun(carry):
+        return carry
+
+    @jax.jit
+    @jax.grad
+    def run(x):
+        a, b = eqxi.while_loop(
+            cond_fun, body_fun, (x, 0.0), max_steps=3, kind="checkpointed"
+        )
+        return b
+
+    capfd.readouterr()
+    assert run(1.0) == 0
+    text, _ = capfd.readouterr()
+    assert "perturb_val (False, False, False, (True, False))" in text
+    assert "symbolic_zero_gradient" not in text
+
+
+def test_buffer_at_set():
+    array = jnp.array([0])
+    assert eqx.tree_equal(eqxi.buffer_at_set(array, 0, 1), jnp.array([1]))
+    assert eqx.tree_equal(eqxi.buffer_at_set(array, 0, 1, pred=False), jnp.array([0]))
+
+    @jax.jit
+    def f(pred):
+        return eqxi.buffer_at_set(array, 0, 1, pred=pred)
+
+    assert eqx.tree_equal(f(True), jnp.array([1]))
+    assert eqx.tree_equal(f(False), jnp.array([0]))
+
+    @jax.jit
+    def g(pred):
+        def cond(_):
+            return True
+
+        def body(carry):
+            assert not eqx.is_array(carry)
+            return eqxi.buffer_at_set(carry, 0, 1, pred=pred)
+
+        return eqxi.while_loop(
+            cond, body, array, max_steps=1, kind="checkpointed", buffers=lambda x: x
+        )
+
+    assert eqx.tree_equal(g(True), jnp.array([1]))
+    assert eqx.tree_equal(g(False), jnp.array([0]))

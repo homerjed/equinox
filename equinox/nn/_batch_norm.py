@@ -4,13 +4,15 @@ from typing import Optional, Union
 import jax
 import jax.lax as lax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float
+from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
-from .._module import field, Module
+from .._misc import default_floating_dtype
+from .._module import field
+from ._sequential import StatefulLayer
 from ._stateful import State, StateIndex
 
 
-class BatchNorm(Module):
+class BatchNorm(StatefulLayer, strict=True):
     r"""Computes a mean and standard deviation over the batch and spatial
     dimensions of an array, and uses these to normalise the whole array. Optionally
     applies a channelwise affine transformation afterwards.
@@ -37,7 +39,7 @@ class BatchNorm(Module):
     training then statistics are computed using the input data, and the running
     statistics updated. During inference then just the running statistics are used.
     Whether the model is in training or inference mode should be toggled using
-    [`equinox.tree_inference`][].
+    [`equinox.nn.inference_mode`][].
     """  # noqa: E501
 
     weight: Optional[Float[Array, "input_size"]]
@@ -61,8 +63,7 @@ class BatchNorm(Module):
         channelwise_affine: bool = True,
         momentum: float = 0.99,
         inference: bool = False,
-        dtype=jnp.float32,
-        **kwargs,
+        dtype=None,
     ):
         """**Arguments:**
 
@@ -78,12 +79,12 @@ class BatchNorm(Module):
         - `inference`: If `False` then the batch means and variances will be calculated
             and used to update the running statistics. If `True` then the running
             statistics are directly used for normalisation. This may be toggled with
-            [`equinox.tree_inference`][] or overridden during
+            [`equinox.nn.inference_mode`][] or overridden during
             [`equinox.nn.BatchNorm.__call__`][].
-        - `dtype`: The dtype of the input array.
+        - `dtype`: The dtype to use for the running statistics. Defaults to either
+            `jax.numpy.float32` or `jax.numpy.float64` depending on whether JAX is in
+            64-bit mode.
         """
-
-        super().__init__(**kwargs)
 
         if channelwise_affine:
             self.weight = jnp.ones((input_size,))
@@ -91,12 +92,14 @@ class BatchNorm(Module):
         else:
             self.weight = None
             self.bias = None
-        self.first_time_index = StateIndex(lambda **_: jnp.array(True))
-        make_buffers = lambda **_: (
+        self.first_time_index = StateIndex(jnp.array(True))
+        if dtype is None:
+            dtype = default_floating_dtype()
+        init_buffers = (
             jnp.empty((input_size,), dtype=dtype),
             jnp.empty((input_size,), dtype=dtype),
         )
-        self.state_index = StateIndex(make_buffers)
+        self.state_index = StateIndex(init_buffers)
         self.inference = inference
         self.axis_name = axis_name
         self.input_size = input_size
@@ -104,12 +107,13 @@ class BatchNorm(Module):
         self.channelwise_affine = channelwise_affine
         self.momentum = momentum
 
+    @jax.named_scope("eqx.nn.BatchNorm")
     def __call__(
         self,
         x: Array,
         state: State,
         *,
-        key: Optional["jax.random.PRNGKey"] = None,  # pyright: ignore
+        key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
     ) -> tuple[Array, State]:
         """**Arguments:**

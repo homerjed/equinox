@@ -1,7 +1,9 @@
 import itertools as it
+import math
 from collections.abc import Callable, Sequence
 from typing import Optional, TypeVar, Union
 
+import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -30,7 +32,7 @@ def _ntuple(n: int) -> Callable[[Union[_T, Sequence[_T]]], tuple[_T, ...]]:
     return parse
 
 
-class Conv(Module):
+class Conv(Module, strict=True):
     """General N-dimensional convolution."""
 
     num_spatial_dims: int = field(static=True)
@@ -58,7 +60,6 @@ class Conv(Module):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         """**Arguments:**
 
@@ -97,7 +98,6 @@ class Conv(Module):
             dimension.
 
         """
-        super().__init__(**kwargs)
         wkey, bkey = jrandom.split(key, 2)
 
         parse = _ntuple(num_spatial_dims)
@@ -112,7 +112,7 @@ class Conv(Module):
             )
 
         grouped_in_channels = in_channels // groups
-        lim = 1 / np.sqrt(grouped_in_channels * np.prod(kernel_size))
+        lim = 1 / np.sqrt(grouped_in_channels * math.prod(kernel_size))
         self.weight = jrandom.uniform(
             wkey,
             (out_channels, grouped_in_channels) + kernel_size,
@@ -150,6 +150,7 @@ class Conv(Module):
         self.groups = groups
         self.use_bias = use_bias
 
+    @jax.named_scope("eqx.nn.Conv")
     def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
         """**Arguments:**
 
@@ -199,7 +200,6 @@ class Conv1d(Conv):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         super().__init__(
             num_spatial_dims=1,
@@ -212,7 +212,6 @@ class Conv1d(Conv):
             groups=groups,
             use_bias=use_bias,
             key=key,
-            **kwargs,
         )
 
 
@@ -231,7 +230,6 @@ class Conv2d(Conv):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         super().__init__(
             num_spatial_dims=2,
@@ -244,7 +242,6 @@ class Conv2d(Conv):
             groups=groups,
             use_bias=use_bias,
             key=key,
-            **kwargs,
         )
 
 
@@ -263,7 +260,6 @@ class Conv3d(Conv):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         super().__init__(
             num_spatial_dims=3,
@@ -276,11 +272,10 @@ class Conv3d(Conv):
             groups=groups,
             use_bias=use_bias,
             key=key,
-            **kwargs,
         )
 
 
-class ConvTranspose(Module):
+class ConvTranspose(Module, strict=True):
     """General N-dimensional transposed convolution."""
 
     num_spatial_dims: int = field(static=True)
@@ -310,7 +305,6 @@ class ConvTranspose(Module):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         """**Arguments:**
 
@@ -369,7 +363,6 @@ class ConvTranspose(Module):
             and [this report](https://arxiv.org/abs/1603.07285) for a nice reference.
         """  # noqa: E501
 
-        super().__init__(**kwargs)
         wkey, bkey = jrandom.split(key, 2)
 
         parse = _ntuple(num_spatial_dims)
@@ -383,7 +376,7 @@ class ConvTranspose(Module):
                 raise ValueError("Must have `output_padding < stride` (elementwise).")
 
         grouped_in_channels = in_channels // groups
-        lim = 1 / np.sqrt(grouped_in_channels * np.prod(kernel_size))
+        lim = 1 / np.sqrt(grouped_in_channels * math.prod(kernel_size))
         self.weight = jrandom.uniform(
             wkey,
             (out_channels, grouped_in_channels) + kernel_size,
@@ -422,6 +415,7 @@ class ConvTranspose(Module):
         self.groups = groups
         self.use_bias = use_bias
 
+    @jax.named_scope("eqx.nn.ConvTranspose")
     def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
         """**Arguments:**
 
@@ -479,7 +473,6 @@ class ConvTranspose1d(ConvTranspose):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         super().__init__(
             num_spatial_dims=1,
@@ -493,7 +486,6 @@ class ConvTranspose1d(ConvTranspose):
             groups=groups,
             use_bias=use_bias,
             key=key,
-            **kwargs,
         )
 
 
@@ -513,7 +505,6 @@ class ConvTranspose2d(ConvTranspose):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         super().__init__(
             num_spatial_dims=2,
@@ -527,7 +518,6 @@ class ConvTranspose2d(ConvTranspose):
             groups=groups,
             use_bias=use_bias,
             key=key,
-            **kwargs,
         )
 
 
@@ -547,7 +537,6 @@ class ConvTranspose3d(ConvTranspose):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs,
     ):
         super().__init__(
             num_spatial_dims=3,
@@ -561,5 +550,4 @@ class ConvTranspose3d(ConvTranspose):
             groups=groups,
             use_bias=use_bias,
             key=key,
-            **kwargs,
         )

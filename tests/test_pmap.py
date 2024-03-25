@@ -1,15 +1,14 @@
 import functools as ft
 from typing import Any, Union
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree_util as jtu
 import pytest
 
-import equinox as eqx
-
-from .helpers import shaped_allclose as _shaped_allclose
+from .helpers import tree_allclose as _shaped_allclose
 
 
 (cpu,) = jax.devices("cpu")
@@ -40,7 +39,8 @@ def test_args():
 def test_default():
     @filter_pmap(in_axes=_zero_if_inexact_array_else_none)
     def f(a, b):
-        return a + b
+        with jax.numpy_dtype_promotion("standard"):
+            return a + b
 
     assert shaped_allclose(f(jnp.array(3), jnp.array([3.0])), jnp.array([6.0]))
 
@@ -258,12 +258,15 @@ def test_keyword_default(getkey):
 
 
 # Issue 325
-def test_aot_compilation():
+
+
+@pytest.mark.parametrize("donate", ("all", "none"))
+def test_aot_compilation(donate):
     def f(x, y):
         return 2 * x + y
 
     x, y = jnp.array([3]), 4
-    lowered = filter_pmap(f).lower(x, y)
+    lowered = filter_pmap(f, donate=donate).lower(x, y)
     lowered.as_text()
     compiled = lowered.compile()
     compiled(x, y)

@@ -1,4 +1,5 @@
-from typing import Any, Union
+import itertools as it
+from typing import Any, TYPE_CHECKING, Union
 
 import jax
 import jax.core
@@ -8,10 +9,11 @@ import jax.interpreters.mlir as mlir
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.tree_util as jtu
-from jaxtyping import Array, Bool, Shaped
+from jaxtyping import Array, Bool
 
 from ..._filters import combine, is_array, partition
 from ..._module import field, Module
+from ..._pretty_print import tree_pformat
 from ..._tree import tree_at, tree_equal
 from ..._unvmap import unvmap_any
 from .._nontraceable import nonbatchable
@@ -169,7 +171,7 @@ def _maybe_set_transpose(
     i_static,
     i_treedef,
     kwargs,
-    makes_false_steps
+    makes_false_steps,
 ):
     assert not ad.is_undefined_primal(pred)
     for z in i_dynamic_leaves:
@@ -242,13 +244,37 @@ def _maybe_set(pred, xs, x, i, *, kwargs, makes_false_steps):
         i_static=i_static,
         i_treedef=i_treedef,
         kwargs=kwargs,
-        makes_false_steps=makes_false_steps
+        makes_false_steps=makes_false_steps,
     )
     return out
 
 
+if TYPE_CHECKING:
+    from typing import Annotated, TypeVar
+    from typing_extensions import TypeAlias
+
+    _T = TypeVar("_T")
+    MaybeBuffer: TypeAlias = Annotated[_T, "MaybeBuffer"]
+else:
+
+    class _MetaBufferItem(type):
+        def __instancecheck__(cls, instance):
+            annotation = cls.annotation
+            while type(instance) is _Buffer:
+                instance = instance._array
+            return isinstance(instance, annotation)
+
+    class MaybeBuffer:
+        def __class_getitem__(cls, item):
+            class _BufferItem(metaclass=_MetaBufferItem):
+                annotation = item
+
+            return _BufferItem
+
+
 class _Buffer(Module):
-    _array: Union[Shaped[Array, "..."], "_Buffer"]
+    # annotation removed because beartype can't handle the forward reference.
+    _array: Any  # Union[Shaped[Array, "..."], _Buffer]
     _pred: Bool[Array, ""]
     _tag: object = field(static=True)
     _makes_false_steps: bool = field(static=True)
@@ -311,6 +337,21 @@ class _BufferItem(Module):
         )
 
 
+def buffer_at_set(buffer: Union[Array, _Buffer], item, x, *, pred=True, **kwargs):
+    """As `buffer.at[...].set(...)`, and supports the `pred` argument even if it is an
+    array.
+
+    This is primarily useful when calling a buffer-using cond or body function outside
+    of a while loop, for any reason.
+    """
+    if isinstance(buffer, _Buffer):
+        return buffer.at[item].set(x, pred=pred, **kwargs)
+    else:
+        if pred is not True:
+            x = jnp.where(pred, x, buffer.at[item].get(**kwargs))
+        return buffer.at[item].set(x)
+
+
 def _is_buffer(x):
     return isinstance(x, _Buffer)
 
@@ -321,17 +362,11 @@ def _unwrap_buffers(x):
     return x
 
 
-# Work around JAX issue #15676
-@jax.custom_jvp
-def fixed_asarray(x):
-    return jnp.asarray(x)
-
-
-@fixed_asarray.defjvp
-def _fixed_asarray_jvp(x, tx):
-    (x,) = x
-    (tx,) = tx
-    return fixed_asarray(x), fixed_asarray(tx)
+# Work around JAX issue #15676.
+# This issue arises with both JVP tracing and make_jaxpr tracing. The former can be
+# handled with a custom_jvp, but the latter cannot. So we need to just call `jnp.array`
+# instead.
+fixed_asarray = jnp.array
 
 
 def common_rewrite(cond_fun, body_fun, init_val, max_steps, buffers, makes_false_steps):
@@ -416,13 +451,34 @@ def common_rewrite(cond_fun, body_fun, init_val, max_steps, buffers, makes_false
         step, pred, _, val = val
         buffer_val = _wrap_buffers(val, pred, tag)
         buffer_val2 = body_fun(buffer_val)
+        # Needed to work with `disable_jit`, as then we lose the automatic
+        # ArrayLike->Array cast provided by JAX's while loops.
+        # The input `val` is already cast to Array below, so this matches that.
+        buffer_val2 = jtu.tree_map(fixed_asarray, buffer_val2)
         # Strip `.named_shape`; c.f. Diffrax issue #246
         struct = jax.eval_shape(lambda: buffer_val)
         struct2 = jax.eval_shape(lambda: buffer_val2)
-        struct = jtu.tree_map(lambda x: (x.shape, x.dtype), struct)
-        struct2 = jtu.tree_map(lambda x: (x.shape, x.dtype), struct2)
+        struct = jtu.tree_map(lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), struct)
+        struct2 = jtu.tree_map(
+            lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype), struct2
+        )
         if not tree_equal(struct, struct2):
-            raise ValueError("`body_fun` must have the same input and output structure")
+            string = tree_pformat(struct, struct_as_array=True)
+            string2 = tree_pformat(struct2, struct_as_array=True)
+            out = []
+            for line, line2 in it.zip_longest(
+                string.split("\n"), string2.split("\n"), fillvalue=""
+            ):
+                if line == line2:
+                    out.append("  " + line)
+                else:
+                    out.append("- " + line)
+                    out.append("+ " + line2)
+            out = "\n".join(out)
+            raise ValueError(
+                "`body_fun` must have the same input and output structure. Difference "
+                "is:\n" + out
+            )
         val2 = jtu.tree_map(
             unwrap_and_select, buffer_val, buffer_val2, is_leaf=is_our_buffer
         )

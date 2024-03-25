@@ -3,7 +3,7 @@ import functools as ft
 import inspect
 import warnings
 from collections.abc import Callable, Hashable
-from typing import Any, Optional, overload, Union
+from typing import Any, Literal, Optional, overload, Union
 
 import jax
 import jax._src.traceback_util as traceback_util
@@ -406,7 +406,7 @@ def filter_vmap(
         _axis_size=axis_size,
         _vmapkwargs=vmapkwargs,
     )
-    return module_update_wrapper(vmap_wrapper, fun)
+    return module_update_wrapper(vmap_wrapper)
 
 
 @compile_cache
@@ -487,7 +487,7 @@ def _preprocess(info, args, kwargs):
     maybe_dummy = _common_preprocess(axis_size, kwargs)
     del kwargs
     dynamic = filter((fun, args, maybe_dummy, out_axes), is_array)
-    return dynamic
+    return (dynamic,)
 
 
 def _postprocess(out):
@@ -572,7 +572,7 @@ def filter_pmap(
     out_axes: PyTree[AxisSpec] = if_array(0),
     axis_name: Hashable = None,
     axis_size: Optional[int] = None,
-    donate: str = "none",
+    donate: Literal["all", "warn", "none"] = "none",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     ...
 
@@ -585,7 +585,7 @@ def filter_pmap(
     out_axes: PyTree[AxisSpec] = if_array(0),
     axis_name: Hashable = None,
     axis_size: Optional[int] = None,
-    donate: str = "none",
+    donate: Literal["all", "warn", "none"] = "none",
 ) -> Callable[..., Any]:
     ...
 
@@ -598,10 +598,18 @@ def filter_pmap(
     out_axes: PyTree[AxisSpec] = if_array(0),
     axis_name: Hashable = None,
     axis_size: Optional[int] = None,
-    donate: str = "none",
+    donate: Literal["all", "warn", "none"] = "none",
     **pmapkwargs,
 ):
-    """Parallelises a function. By default, all JAX/NumPy arrays are parallelised down
+    """
+    !!! warning
+
+        JAX has now added more powerful parallelism APIs directly to the JIT interface.
+        As such, using [`equinox.filter_jit`][] with sharded inputs is now recommended
+        over `filter_pmap`. See also the
+        [parallelism example](../../../examples/parallelism/).
+
+    Parallelises a function. By default, all JAX/NumPy arrays are parallelised down
     their leading axis (i.e. axis index 0), and all other types are broadcast.
 
     `jax.pmap`, and thus `equinox.filter_pmap`, also compiles their function in the same
@@ -635,10 +643,10 @@ def filter_pmap(
         it can be deduced by looking at the argument shapes.
     - `donate` indicates whether the buffers of JAX arrays are donated or not, it
         should either be:
-        - `'all'`: the default, donate all arrays and suppress all warnings about
+        - `'all'`: donate all arrays and suppress all warnings about
             unused buffers;
         - `'warn'`: as above, but don't suppress unused buffer warnings;
-        - `'none'`: disables buffer donation.
+        - `'none'`: the default, disables buffer donation.
 
     **Returns:**
 
@@ -698,11 +706,18 @@ def filter_pmap(
             "'donate_argnums'"
         )
 
-    if donate not in {"arrays", "warn", "none"}:
-        raise ValueError(
-            "`filter_jit(..., donate=...)` must be one of 'arrays', 'warn', or 'none'"
+    if donate == "arrays":
+        warnings.warn(
+            "The `donate='arrays'` option to `filter_pmap` has been renamed to "
+            "`donate='all'`",
+            DeprecationWarning,
         )
-    filter_warning = True if donate == "arrays" else False
+        donate = "all"
+    if donate not in {"all", "warn", "none"}:
+        raise ValueError(
+            "`filter_jit(..., donate=...)` must be one of 'all', 'warn', or 'none'"
+        )
+    filter_warning = True if donate == "all" else False
     if donate != "none":
         pmapkwargs["donate_argnums"] = (0,)
 
@@ -715,4 +730,4 @@ def filter_pmap(
         _filter_warning=filter_warning,
         _pmapkwargs=pmapkwargs,
     )
-    return module_update_wrapper(pmap_wrapper, fun)
+    return module_update_wrapper(pmap_wrapper)

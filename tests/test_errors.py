@@ -1,9 +1,8 @@
+import equinox as eqx
+import equinox.internal as eqxi
 import jax
 import jax.numpy as jnp
 import pytest
-
-import equinox as eqx
-import equinox.internal as eqxi
 
 
 def _f(x):
@@ -181,11 +180,13 @@ def test_traceback_runtime_custom():
         while tb is not None:
             code_stack.append(tb.tb_frame.f_code)
             tb = tb.tb_next
-        assert len(code_stack) == 3
-        one, two, three = code_stack
+        assert len(code_stack) == 4
+        one, two, three, four = code_stack
         assert one.co_filename.endswith("test_errors.py")
         assert one.co_name == "test_traceback_runtime_custom"
         assert two.co_filename.endswith("equinox/_jit.py")
         assert two.co_name == "__call__"
-        assert three.co_filename.endswith("equinox/_jit.py")
-        assert three.co_name == "_call"
+        assert three.co_filename.endswith("equinox/_module.py")
+        assert three.co_name == "__call__"
+        assert four.co_filename.endswith("equinox/_jit.py")
+        assert four.co_name == "_call"

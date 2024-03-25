@@ -26,6 +26,7 @@ from jaxtyping import Array, ArrayLike, Complex, Float, PyTree, PyTreeDef
 from ._custom_types import sentinel
 from ._deprecate import deprecated_0_10
 from ._doc_utils import doc_remove_args
+from ._eval_shape import cached_filter_eval_shape
 from ._filters import (
     combine,
     is_array,
@@ -54,12 +55,26 @@ class _ValueAndGradWrapper(Module):
     def __wrapped__(self):
         return self._fun
 
-    def __call__(self, x, /, *args, **kwargs):
+    def __call__(self, *args, **kwargs):
         @ft.partial(jax.value_and_grad, has_aux=self._has_aux, **self._gradkwargs)
         def fun_value_and_grad(_diff_x, _nondiff_x, *_args, **_kwargs):
             _x = combine(_diff_x, _nondiff_x)
             return self._fun(_x, *_args, **_kwargs)
 
+        if len(args) == 0:
+            if len(kwargs) == 0:
+                raise TypeError(
+                    "Functions wrapped with `equinox.filter_{grad, value_and_grad}` "
+                    "must have at least one positional argument. (This is the "
+                    "argument that is differentiated.)"
+                )
+            else:
+                raise TypeError(
+                    "Functions wrapped with `equinox.filter_{grad, value_and_grad}` "
+                    "must have their first argument passed by position, not keyword. "
+                    "(This is the argument that is differentiated.)"
+                )
+        x, *args = args
         diff_x, nondiff_x = partition(x, is_inexact_array)
         return fun_value_and_grad(diff_x, nondiff_x, *args, **kwargs)
 
@@ -75,7 +90,7 @@ class _GradWrapper(Module):
 
     @property
     def __wrapped__(self):
-        return self._fun_value_and_grad
+        return self._fun_value_and_grad.__wrapped__  # pyright: ignore
 
     def __call__(self, /, *args, **kwargs):
         value, grad = self._fun_value_and_grad(*args, **kwargs)
@@ -92,35 +107,39 @@ class _GradWrapper(Module):
 
 
 _Scalar = Union[float, complex, Float[ArrayLike, ""], Complex[ArrayLike, ""]]
+_ScalarTy = TypeVar("_ScalarTy", bound=_Scalar)
 
 
 @overload
 def filter_value_and_grad(
-    *, has_aux: Literal[False] = False
-) -> Callable[[Callable[_P, _Scalar]], Callable[_P, tuple[_Scalar, PyTree]]]:
+    *,
+    has_aux: Literal[False] = False,
+) -> Callable[[Callable[_P, _ScalarTy]], Callable[_P, tuple[_ScalarTy, PyTree]]]:
     ...
 
 
 @overload
 def filter_value_and_grad(
-    fun: Callable[_P, _Scalar], *, has_aux: Literal[False] = False
-) -> Callable[_P, tuple[_Scalar, PyTree]]:
+    fun: Callable[_P, _ScalarTy], *, has_aux: Literal[False] = False
+) -> Callable[_P, tuple[_ScalarTy, PyTree]]:
     ...
 
 
 @overload
 def filter_value_and_grad(
-    *, has_aux: Literal[True] = True
+    *,
+    has_aux: Literal[True] = True,
 ) -> Callable[
-    [Callable[_P, tuple[_Scalar, _T]]], Callable[_P, tuple[tuple[_Scalar, _T], PyTree]]
+    [Callable[_P, tuple[_ScalarTy, _T]]],
+    Callable[_P, tuple[tuple[_ScalarTy, _T], PyTree]],
 ]:
     ...
 
 
 @overload
 def filter_value_and_grad(
-    fun: Callable[_P, tuple[_Scalar, _T]], *, has_aux: Literal[True] = True
-) -> Callable[_P, tuple[tuple[_Scalar, _T], PyTree]]:
+    fun: Callable[_P, tuple[_ScalarTy, _T]], *, has_aux: Literal[True] = True
+) -> Callable[_P, tuple[tuple[_ScalarTy, _T], PyTree]]:
     ...
 
 
@@ -171,12 +190,13 @@ def filter_value_and_grad(
             "as the first argument."
         )
 
-    return module_update_wrapper(_ValueAndGradWrapper(fun, has_aux, gradkwargs), fun)
+    return module_update_wrapper(_ValueAndGradWrapper(fun, has_aux, gradkwargs))
 
 
 @overload
 def filter_grad(
-    *, has_aux: Literal[False] = False
+    *,
+    has_aux: Literal[False] = False,
 ) -> Callable[[Callable[_P, _Scalar]], Callable[_P, PyTree[Float[Array, "..."]]]]:
     ...
 
@@ -190,7 +210,8 @@ def filter_grad(
 
 @overload
 def filter_grad(
-    *, has_aux: Literal[True] = True
+    *,
+    has_aux: Literal[True] = True,
 ) -> Callable[
     [Callable[_P, tuple[_Scalar, _T]]],
     Callable[_P, tuple[PyTree[Float[Array, "..."]], _T]],
@@ -261,7 +282,7 @@ def filter_grad(fun=sentinel, *, has_aux: bool = False, **gradkwargs):
 
     fun_value_and_grad = filter_value_and_grad(fun, has_aux=has_aux, **gradkwargs)
     fun_value_and_grad = cast(_ValueAndGradWrapper, fun_value_and_grad)
-    return module_update_wrapper(_GradWrapper(fun_value_and_grad, has_aux), fun)
+    return module_update_wrapper(_GradWrapper(fun_value_and_grad, has_aux))
 
 
 def _is_none(x):
@@ -416,12 +437,53 @@ _T = TypeVar("_T")
 _FlatPyTree = tuple[list[_T], PyTreeDef]
 
 
+def _check_closure_convert_input(self, args, kwargs):
+    self_in_dynamic_struct = _unflatten(self.in_dynamic_struct)
+    self_in_static = _unflatten(self.in_static)
+    in_dynamic, in_static = partition((args, kwargs), is_array)
+    in_dynamic_struct = jax.eval_shape(lambda: in_dynamic)
+    # `is` because `tree_equal` may return a tracer
+    if tree_equal(in_dynamic_struct, self_in_dynamic_struct) is not True:
+        raise ValueError(
+            "Closure-converted function called with different dynamic arguments to "
+            "the example arguments provided."
+        )
+    if tree_equal(in_static, self_in_static) is not True:
+        raise ValueError(
+            "Closure-converted function called with different static arguments to "
+            "the example arguments provided."
+        )
+    return in_dynamic
+
+
+class _TrivialClosureConvert(Module):
+    fn: types.FunctionType
+    in_dynamic_struct: _FlatPyTree[jax.ShapeDtypeStruct] = field(static=True)
+    in_static: _FlatPyTree[Any] = field(static=True)
+
+    @property
+    def in_struct(self):
+        dynamic = _unflatten(self.in_dynamic_struct)
+        static = _unflatten(self.in_static)
+        return combine(dynamic, static)
+
+    @property
+    def out_struct(self):
+        args, kwargs = self.in_struct
+        return cached_filter_eval_shape(self.fn, *args, **kwargs)
+
+    def __call__(self, *args, **kwargs):
+        # unused output
+        _ = _check_closure_convert_input(self, args, kwargs)
+        return self.fn(*args, **kwargs)
+
+
 class _ClosureConvert(Module):
     # Important that `jaxpr` be a leaf (and not static), so that it is a tuple element
     # when passing through `filter_primitive_bind` and thus visible to
     # `jax.core.subjaxprs`
     jaxpr: jax.core.Jaxpr
-    consts: PyTree[Array]  # Captured in the PyTree structure of _ClosureConvert
+    consts: PyTree[ArrayLike]  # Captured in the PyTree structure of _ClosureConvert
     in_dynamic_struct: _FlatPyTree[jax.ShapeDtypeStruct] = field(static=True)
     out_dynamic_struct: _FlatPyTree[jax.ShapeDtypeStruct] = field(static=True)
     in_static: _FlatPyTree[Any] = field(static=True)
@@ -440,27 +502,13 @@ class _ClosureConvert(Module):
         return combine(dynamic, static)
 
     def __call__(self, *args, **kwargs):
-        self_in_dynamic_struct = _unflatten(self.in_dynamic_struct)
-        self_out_dynamic_struct = _unflatten(self.out_dynamic_struct)
-        self_in_static = _unflatten(self.in_static)
-        self_out_static = _unflatten(self.out_static)
-        in_dynamic, in_static = partition((args, kwargs), is_array)
-        in_dynamic_struct = jax.eval_shape(lambda: in_dynamic)
-        # `is` because `tree_equal` may return a tracer
-        if tree_equal(in_dynamic_struct, self_in_dynamic_struct) is not True:
-            raise ValueError(
-                "Closure-converted function called with different dynamic arguments to "
-                "the example arguments provided."
-            )
-        if tree_equal(in_static, self_in_static) is not True:
-            raise ValueError(
-                "Closure-converted function called with different static arguments to "
-                "the example arguments provided."
-            )
+        in_dynamic = _check_closure_convert_input(self, args, kwargs)
         in_dynamic_flat = jtu.tree_leaves(in_dynamic)
         out_dynamic_flat = jax.core.eval_jaxpr(
             self.jaxpr, self.consts, *in_dynamic_flat
         )
+        self_out_dynamic_struct = _unflatten(self.out_dynamic_struct)
+        self_out_static = _unflatten(self.out_static)
         out_dynamic_struct_flat, out_dynamic_treedef = jtu.tree_flatten(
             self_out_dynamic_struct
         )
@@ -509,24 +557,25 @@ def filter_closure_convert(fn: Callable[_P, _T], *args, **kwargs) -> Callable[_P
         f(1., 1.)
         ```
     """
+    in_dynamic, in_static = partition((args, kwargs), _is_struct)
+    in_dynamic_struct = jax.eval_shape(lambda: in_dynamic)
+    in_dynamic_struct = jtu.tree_flatten(in_dynamic_struct)
+    in_static = jtu.tree_flatten(in_static)
     if isinstance(fn, types.FunctionType) and fn.__closure__ is None:
         # In this case, it's not possible to have any closed-over tracers.
         # Skip jaxpr tracing for efficiency.
-        return fn
-    closed_jaxpr, out_dynamic_struct, out_static = filter_make_jaxpr(fn)(
-        *args, **kwargs
-    )  # pyright: ignore
-    in_dynamic, in_static = partition((args, kwargs), _is_struct)
-    in_dynamic_struct = jax.eval_shape(lambda: in_dynamic)
-    jaxpr = closed_jaxpr.jaxpr
-    consts = closed_jaxpr.consts
-    in_dynamic_struct = jtu.tree_flatten(in_dynamic_struct)
-    out_dynamic_struct = jtu.tree_flatten(out_dynamic_struct)
-    in_static = jtu.tree_flatten(in_static)
-    out_static = jtu.tree_flatten(out_static)
-    closure_converted = _ClosureConvert(
-        jaxpr, consts, in_dynamic_struct, out_dynamic_struct, in_static, out_static
-    )
+        closure_converted = _TrivialClosureConvert(fn, in_dynamic_struct, in_static)
+    else:
+        closed_jaxpr, out_dynamic_struct, out_static = filter_make_jaxpr(fn)(
+            *args, **kwargs
+        )  # pyright: ignore
+        jaxpr = closed_jaxpr.jaxpr
+        consts = closed_jaxpr.consts
+        out_dynamic_struct = jtu.tree_flatten(out_dynamic_struct)
+        out_static = jtu.tree_flatten(out_static)
+        closure_converted = _ClosureConvert(
+            jaxpr, consts, in_dynamic_struct, out_dynamic_struct, in_static, out_static
+        )
     closure_converted = cast(Callable[_P, _T], closure_converted)
     return closure_converted
 
@@ -595,7 +644,8 @@ class filter_custom_jvp:
             "previously passed to indicate a symbolic zero tangent for all objects "
             "that weren't inexact arrays, but all inexact arrays always had an "
             "array-valued tangent. Now, `None` may also be passed to indicate that an "
-            "inexact array has a symbolic zero tangent."
+            "inexact array has a symbolic zero tangent.",
+            stacklevel=2,
         )
 
         def _fn_jvp(args, t_args, **kwargs):
@@ -774,7 +824,8 @@ class filter_custom_vjp:
             "- `None` was previously passed to indicate a symbolic zero gradient for "
             "    all objects that weren't inexact arrays, but all inexact arrays "
             "    always had an array-valued gradient. Now, `None` may also be passed "
-            "    to indicate that an inexact array has a symbolic zero gradient."
+            "    to indicate that an inexact array has a symbolic zero gradient.",
+            stacklevel=2,
         )
 
         def _fn_fwd(perturbed, vjp_arg, *args, **kwargs):
@@ -940,3 +991,82 @@ if getattr(typing, "GENERATING_DOCUMENTATION", False) and not TYPE_CHECKING:
 
     filter_custom_jvp.__doc__ = _filter_custom_jvp_doc
     filter_custom_vjp.__doc__ = _filter_custom_vjp_doc
+
+
+def filter_checkpoint(
+    fun: Callable[_P, _T] = sentinel,
+    *,
+    prevent_cse: bool = True,
+    policy: Optional[Callable[..., bool]] = None,
+) -> Callable[_P, _T]:
+    """Filtered version of `jax.checkpoint`.
+
+    Gradient checkpointing is a technique for reducing memory usage during
+    backpropagation, especially when used with reverse mode automatic differentiation
+    (e.g., `jax.grad` or `equinox.filter_grad`).
+
+    **Arguments:**
+
+    - `fun`: The function to be checkpointed. Will be called as `fun(*args, **kwargs)`.
+        Can return an arbitrary PyTree.
+    - `prevent_cse`: If `True` (the default), then JAX will not perform common
+    subexpression elimination. Please see the documentation for `jax.checkpoint
+    ` for more details.
+    - `policy`: Callable for controlling which intermediate values should be
+    rematerialized. It should be one of the attributes of `jax.checkpoint_policies`.
+    """
+
+    if fun is sentinel:
+        return ft.partial(  # pyright: ignore
+            filter_checkpoint,
+            prevent_cse=prevent_cse,
+            policy=policy,
+        )
+
+    return module_update_wrapper(
+        _CheckpointWrapper(fun, prevent_cse=prevent_cse, policy=policy)
+    )
+
+
+class _CheckpointWrapper(Module):
+    _fun: Callable
+    _prevent_cse: bool
+    _policy: Optional[Callable[..., bool]]
+
+    def __init__(
+        self,
+        fun: Callable,
+        *,
+        prevent_cse: bool = True,
+        policy: Optional[Callable[..., bool]] = None,
+    ):
+        self._fun = fun
+        self._prevent_cse = prevent_cse
+        self._policy = policy
+
+    @property
+    def __wrapped__(self):
+        return self._fun
+
+    def __call__(self, *args, **kwargs):
+        @ft.partial(
+            jax.checkpoint,  # pyright: ignore
+            prevent_cse=self._prevent_cse,
+            policy=self._policy,
+            static_argnums=(0,),
+        )
+        def fun_checkpoint(_static, _dynamic):
+            _args, _kwargs = combine(_static, _dynamic)
+            out = self._fun(*_args, **_kwargs)
+            _dynamic_out, _static_out = partition(out, is_array)
+            return _dynamic_out, Static(_static_out)
+
+        dynamic, static = partition((args, kwargs), is_array)
+        dynamic_out, static_out = fun_checkpoint(static, dynamic)
+
+        return combine(dynamic_out, static_out.value)
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return Partial(self, instance)

@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, cast, TYPE_CHECKING, Union
 
 import jax._src.traceback_util as traceback_util
@@ -36,9 +37,11 @@ def _store(
         our_index = our_item._value.item()
         existing_message = index_to_message[our_index]
         if message != existing_message:
-            raise ValueError(
-                f"Enumeration has duplicate incompatible values for {name}"
+            warnings.warn(
+                f"Enumeration has duplicate incompatible values for {name}. Using the "
+                f"latest, which is '{message}'."
             )
+        index_to_message[our_index] = message
         return our_index
 
 
@@ -96,7 +99,7 @@ class _EnumerationMeta(type):
         if "__doc__" not in cls.__dict__ or cls.__doc__ is None:
             doc_pieces = [
                 """An
-[enumeration](https://docs.kidger.site/equinox/api/utilities/enumerations/), with the
+[enumeration](https://docs.kidger.site/equinox/api/enumerations/), with the
 following entries:
 """
             ]
@@ -138,7 +141,9 @@ following entries:
 
 class EnumerationItem(Module):
     _value: Int[Union[Array, np.ndarray], ""]
-    _enumeration: type["Enumeration"] = field(static=True)
+    # Should have annotation `"type[Enumeration]"`, but this fails due to beartype bug
+    # #289.
+    _enumeration: Any = field(static=True)
 
     def __eq__(self, other) -> Bool[Array, ""]:  # pyright: ignore
         if isinstance(other, EnumerationItem):
@@ -184,6 +189,9 @@ class EnumerationItem(Module):
         return branched_error_if(
             token, pred, self._value, self._enumeration._index_to_message
         )
+
+    def is_traced(self) -> bool:
+        return isinstance(self._value, jax.core.Tracer)
 
 
 if TYPE_CHECKING:
@@ -353,10 +361,13 @@ else:
                 raise ValueError("`where` requires a scalar boolean predicate")
             if isinstance(a, EnumerationItem) and isinstance(b, EnumerationItem):
                 if a._enumeration is cls and b._enumeration is cls:
-                    with jax.ensure_compile_time_eval():
-                        value = jnp.where(pred, a._value, b._value)
-                    cls = cast(type[Enumeration], cls)
-                    return EnumerationItem(value, cls)
+                    if a._value is b._value:
+                        return a
+                    else:
+                        with jax.ensure_compile_time_eval():
+                            value = jnp.where(pred, a._value, b._value)
+                        cls = cast(type[Enumeration], cls)
+                        return EnumerationItem(value, cls)
             name = f"{cls.__module__}.{cls.__qualname__}"
             raise ValueError(
                 f"Arguments to {name}.where(...) must be members of {name}."

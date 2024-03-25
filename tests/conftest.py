@@ -1,17 +1,20 @@
-import random
 import typing
 
-import jax.random as jr
+import jax
 import pytest
 
 
 typing.TESTING = True  # pyright: ignore
 
 
-@pytest.fixture()
-def getkey():
-    def _getkey():
-        # Not sure what the maximum actually is but this will do
-        return jr.PRNGKey(random.randint(0, 2**31 - 1))
+jax.config.update("jax_numpy_dtype_promotion", "strict")
+jax.config.update("jax_numpy_rank_promotion", "raise")
 
-    return _getkey
+
+@pytest.fixture
+def getkey():
+    # Delayed import so that jaxtyping can transform the AST of Equinox before it is
+    # imported, but conftest.py is ran before then.
+    import equinox.internal as eqxi
+
+    return eqxi.GetKey()

@@ -6,8 +6,9 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from .._module import field, Module
+from .._module import field
 from .._tree import tree_at
+from ._sequential import StatefulLayer
 from ._stateful import State, StateIndex
 
 
@@ -26,7 +27,7 @@ def _power_iteration(weight, u, v, eps):
 _Layer = TypeVar("_Layer")
 
 
-class SpectralNorm(Module, Generic[_Layer]):
+class SpectralNorm(StatefulLayer, Generic[_Layer], strict=True):
     """Applies spectral normalisation to a given parameter.
 
     Given a weight matrix $W$, and letting $σ(W)$ denote (an approximation to) its
@@ -48,7 +49,7 @@ class SpectralNorm(Module, Generic[_Layer]):
     Note that this layer behaves differently during training and inference. During
     training then power iterations are updated; during inference they are fixed.
     Whether the model is in training or inference mode should be toggled using
-    [`equinox.tree_inference`][].
+    [`equinox.nn.inference_mode`][].
     """  # noqa: E501
 
     layer: _Layer
@@ -67,7 +68,6 @@ class SpectralNorm(Module, Generic[_Layer]):
         inference: bool = False,
         *,
         key: PRNGKeyArray,
-        **kwargs
     ):
         """**Arguments:**
 
@@ -80,11 +80,10 @@ class SpectralNorm(Module, Generic[_Layer]):
         - `eps`: Epsilon for numerical stability when calculating norms.
         - `inference`: Whether this is in inference mode, at which time no power
             iterations are performed.  This may be toggled with
-            [`equinox.tree_inference`][].
+            [`equinox.nn.inference_mode`][].
         - `key`: A `jax.random.PRNGKey` used to provide randomness for initialisation.
             (Keyword only argument.)
         """
-        super().__init__(**kwargs)
 
         self.layer = layer
         self.weight_name = weight_name
@@ -102,15 +101,16 @@ class SpectralNorm(Module, Generic[_Layer]):
         v0 = jr.normal(vkey, (v_len,))
         for _ in range(15):
             u0, v0 = _power_iteration(weight, u0, v0, eps)
-        self.uv_index = StateIndex(lambda **_: (u0, v0))
+        self.uv_index = StateIndex((u0, v0))
 
+    @jax.named_scope("eqx.nn.SpectralNorm")
     def __call__(
         self,
         x: Array,
         state: State,
         *,
-        key: Optional["jax.random.PRNGKey"] = None,  # pyright: ignore
-        inference: Optional[bool] = None
+        key: Optional[PRNGKeyArray] = None,
+        inference: Optional[bool] = None,
     ) -> tuple[Array, State]:
         """**Arguments:**
 

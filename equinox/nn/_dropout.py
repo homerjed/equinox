@@ -1,6 +1,7 @@
 import warnings
 from typing import Optional
 
+import jax
 import jax.lax as lax
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -9,13 +10,13 @@ from jaxtyping import Array, PRNGKeyArray
 from .._module import Module
 
 
-class Dropout(Module):
+class Dropout(Module, strict=True):
     """Applies dropout.
 
     Note that this layer behaves differently during training and inference. During
     training then dropout is randomly applied; during inference this layer does nothing.
     Whether the model is in training or inference mode should be toggled using
-    [`equinox.tree_inference`][].
+    [`equinox.nn.inference_mode`][].
     """
 
     # Not static fields as it makes sense to want to modify them via equinox.tree_at.
@@ -27,14 +28,14 @@ class Dropout(Module):
         p: float = 0.5,
         inference: bool = False,
         *,
-        deterministic: Optional[bool] = None
+        deterministic: Optional[bool] = None,
     ):
         """**Arguments:**
 
         - `p`: The fraction of entries to set to zero. (On average.)
         - `inference`: Whether to actually apply dropout at all. If `True` then dropout
             is *not* applied. If `False` then dropout is applied. This may be toggled
-            with [`equinox.tree_inference`][] or overridden during
+            with [`equinox.nn.inference_mode`][] or overridden during
             [`equinox.nn.Dropout.__call__`][].
         - `deterministic`: Deprecated alternative to `inference`.
         """
@@ -53,13 +54,14 @@ class Dropout(Module):
     def deterministic(self):
         return self.inference
 
+    @jax.named_scope("eqx.nn.Dropout")
     def __call__(
         self,
         x: Array,
         *,
         key: Optional[PRNGKeyArray] = None,
         inference: Optional[bool] = None,
-        deterministic: Optional[bool] = None
+        deterministic: Optional[bool] = None,
     ) -> Array:
         """**Arguments:**
 

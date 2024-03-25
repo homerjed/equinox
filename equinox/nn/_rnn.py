@@ -1,6 +1,7 @@
 import math
 from typing import Optional
 
+import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jrandom
@@ -9,7 +10,7 @@ from jaxtyping import Array, PRNGKeyArray
 from .._module import field, Module
 
 
-class GRUCell(Module):
+class GRUCell(Module, strict=True):
     """A single step of a Gated Recurrent Unit (GRU).
 
     !!! example
@@ -46,7 +47,6 @@ class GRUCell(Module):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs
     ):
         """**Arguments:**
 
@@ -57,7 +57,6 @@ class GRUCell(Module):
         - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
             initialisation. (Keyword only argument.)
         """
-        super().__init__(**kwargs)
 
         ihkey, hhkey, bkey, bkey2 = jrandom.split(key, 4)
         lim = math.sqrt(1 / hidden_size)
@@ -83,6 +82,7 @@ class GRUCell(Module):
         self.hidden_size = hidden_size
         self.use_bias = use_bias
 
+    @jax.named_scope("eqx.nn.GRUCell")
     def __call__(
         self, input: Array, hidden: Array, *, key: Optional[PRNGKeyArray] = None
     ):
@@ -112,7 +112,7 @@ class GRUCell(Module):
         return new + inp * (hidden - new)
 
 
-class LSTMCell(Module):
+class LSTMCell(Module, strict=True):
     """A single step of a Long-Short Term Memory unit (LSTM).
 
     !!! example
@@ -149,7 +149,6 @@ class LSTMCell(Module):
         use_bias: bool = True,
         *,
         key: PRNGKeyArray,
-        **kwargs
     ):
         """**Arguments:**
 
@@ -160,7 +159,6 @@ class LSTMCell(Module):
         - `key`: A `jax.random.PRNGKey` used to provide randomness for parameter
             initialisation. (Keyword only argument.)
         """
-        super().__init__(**kwargs)
 
         ihkey, hhkey, bkey = jrandom.split(key, 3)
         lim = math.sqrt(1 / hidden_size)
@@ -182,6 +180,7 @@ class LSTMCell(Module):
         self.hidden_size = hidden_size
         self.use_bias = use_bias
 
+    @jax.named_scope("eqx.nn.LSTMCell")
     def __call__(self, input, hidden, *, key=None):
         """**Arguments:**
 

@@ -2,6 +2,7 @@ import importlib.metadata
 
 from . import debug as debug, internal as internal, nn as nn
 from ._ad import (
+    filter_checkpoint as filter_checkpoint,
     filter_closure_convert as filter_closure_convert,
     filter_custom_jvp as filter_custom_jvp,
     filter_custom_vjp as filter_custom_vjp,
@@ -40,6 +41,7 @@ from ._module import (
     module_update_wrapper as module_update_wrapper,
     Partial as Partial,
     static_field as static_field,
+    StrictConfig as StrictConfig,
 )
 from ._pretty_print import tree_pformat as tree_pformat, tree_pprint as tree_pprint
 from ._serialisation import (
@@ -53,7 +55,6 @@ from ._tree import (
     tree_check as tree_check,
     tree_equal as tree_equal,
     tree_flatten_one_level as tree_flatten_one_level,
-    tree_inference as tree_inference,
 )
 from ._update import apply_updates as apply_updates
 from ._vmap_pmap import (
@@ -61,6 +62,7 @@ from ._vmap_pmap import (
     filter_vmap as filter_vmap,
     if_array as if_array,
 )
+from .nn import inference_mode as tree_inference  # noqa: F401 - backward compatibility
 
 
 __version__ = importlib.metadata.version("equinox")

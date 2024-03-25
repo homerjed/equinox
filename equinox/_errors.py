@@ -14,7 +14,7 @@ import numpy as np
 from jaxtyping import Array, ArrayLike, Bool, Int, PyTree
 
 from ._ad import filter_custom_jvp
-from ._config import EQX_ON_ERROR
+from ._config import EQX_ON_ERROR, EQX_ON_ERROR_BREAKPOINT_FRAMES
 from ._doc_utils import doc_remove_args
 from ._filters import combine, is_array, partition
 from ._jit import filter_jit
@@ -105,10 +105,16 @@ def _error(x, pred, index, *, msgs, on_error):
                 display_msg, index_struct, index, vectorized=True
             )
             # Support JAX with and without DCE behaviour on breakpoints.
-            if "token" in inspect.signature(jax.debug.breakpoint).parameters.keys():
-                breakpoint_kwargs = dict(token=_index)
-            else:
-                breakpoint_kwargs = {}
+            breakpoint_params = inspect.signature(
+                jax.debug.breakpoint
+            ).parameters.keys()
+            breakpoint_kwargs = {}
+            if "token" in breakpoint_params:
+                breakpoint_kwargs["token"] = _index
+            if "vectorized" in breakpoint_params:
+                breakpoint_kwargs["vectorized"] = True
+            if EQX_ON_ERROR_BREAKPOINT_FRAMES is not None:
+                breakpoint_kwargs["num_frames"] = EQX_ON_ERROR_BREAKPOINT_FRAMES
             _index = jax.debug.breakpoint(**breakpoint_kwargs)
             return jax.pure_callback(  # pyright: ignore
                 to_nan, struct, _index, vectorized=True
@@ -186,12 +192,21 @@ def error_if(
     errors should be handled. Possible values are:
 
     - `EQX_ON_ERROR=raise` will raise a runtime error.
-    - `EQX_ON_ERROR=breakpoint` will open a debugger. Note that this option may prevent
-        certain compiler optimisations, so permanently fixing this value is not
-        recommended. You will need to also pass the `-s` flag to `pytest`, if you are
-        also using that.
     - `EQX_ON_ERROR=nan` will return `NaN` instead of `x`, and then continue the
         computation.
+    - `EQX_ON_ERROR=breakpoint` will open a debugger.
+        - Note that this option may prevent certain compiler optimisations, so
+            permanently fixing this value is not recommended.
+        - You will need to also pass the `-s` flag to `pytest`, if you are
+            also using that.
+        - This will sometimes raise a trace-time error due to JAX bug
+            [#16732](https://github.com/google/jax/issues/16732). (Bugs whilst debugging
+            bugs, eek!) If this happens, then it can be worked around by additionally
+            setting the `EQX_ON_ERROR_BREAKPOINT_FRAMES` variable to a small integer,
+            which specifies how many frames upwards the debugger should capture. The
+            JAX bug is triggered when taking too many frames.
+
+    After changing an environment variable, the Python process must be restarted.
 
     **Returns:**
 

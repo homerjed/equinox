@@ -18,6 +18,7 @@ from .._errors import (
     branched_error_if as branched_error_if,
     error_if as error_if,
 )
+from .._eval_shape import cached_filter_eval_shape as cached_filter_eval_shape
 from .._misc import left_broadcast_to as left_broadcast_to
 from .._module import Static as Static
 from .._pretty_print import tree_pp as tree_pp
@@ -41,6 +42,7 @@ from ..debug import (
     store_dce as store_dce,
 )
 from ..debug._announce_transform import announce_jaxpr_p as announce_jaxpr_p
+from ._closure_to_pytree import closure_to_pytree as closure_to_pytree
 from ._finalise_jaxpr import (
     finalise_eval_jaxpr as finalise_eval_jaxpr,
     finalise_fn as finalise_fn,
@@ -50,8 +52,11 @@ from ._finalise_jaxpr import (
     primitive_finalisations as primitive_finalisations,
     register_impl_finalisation as register_impl_finalisation,
 )
+from ._getkey import GetKey as GetKey
 from ._loop import (
+    buffer_at_set as buffer_at_set,
     maybe_set_p as maybe_set_p,
+    MaybeBuffer as MaybeBuffer,
     scan as scan,
     select_if_vmap_p as select_if_vmap_p,
     while_loop as while_loop,
